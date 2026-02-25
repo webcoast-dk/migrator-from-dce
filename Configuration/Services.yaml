@@ -1,0 +1,12 @@
+services:
+   _defaults:
+      autowire: true
+      autoconfigure: true
+      public: false
+   
+   WEBcoast\MigratorFromDce\:
+      resource: '../Classes/'
+   
+   webcoast.migrator_from_dce.field_configuration_migrators:
+      class: array
+      factory: ['WEBcoast\MigratorFromDce\Migration\FieldConfigurationMigratorFactory', 'getOrderedMigrators']
