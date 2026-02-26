@@ -64,7 +64,7 @@ readonly class DceContentTypeProvider implements ContentTypeProviderInterface
         ];
     }
 
-    public function getTemplate(string $contentType): ?string
+    public function getFrontendTemplate(string $contentType): ?string
     {
         $templateContent = null;
         $dceConfiguration = $this->dceRepository->getConfiguration($contentType);
@@ -87,6 +87,11 @@ readonly class DceContentTypeProvider implements ContentTypeProviderInterface
         }
 
         return $templateContent;
+    }
+
+    public function getBackendPreviewTemplate(string $contentType): ?string
+    {
+        return null;
     }
 
     public function getIcon(string $contentType): ?string
