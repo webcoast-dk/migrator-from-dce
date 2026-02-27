@@ -35,7 +35,7 @@ class DceRepository
             ->select('*')
             ->from('tx_dce_domain_model_dce');
 
-        if (str_starts_with('dceuid', (string) $dceIdentifier)) {
+        if (str_starts_with((string) $dceIdentifier, 'dceuid')) {
             // Remove the `dceuid` prefix to get the actual UID value
             $dceIdentifier = substr((string) $dceIdentifier, strlen('dceuid'));
         }

@@ -4,19 +4,25 @@ declare(strict_types=1);
 
 namespace WEBcoast\MigratorFromDce;
 
-use Symfony\Component\DependencyInjection\Attribute\Autowire;
+use Symfony\Component\DependencyInjection\Attribute\AutowireIterator;
 use TYPO3\CMS\Core\Core\Environment;
 use TYPO3\CMS\Core\Imaging\IconRegistry;
 use TYPO3\CMS\Core\Resource\FileRepository;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
-use WEBcoast\Migrator\Configuration\ContentTypeProviderInterface;
 use WEBcoast\Migrator\Migration\FieldType;
+use WEBcoast\Migrator\Provider\ContainerTemplateProviderInterface;
+use WEBcoast\Migrator\Provider\ContentTypeProviderInterface;
 use WEBcoast\Migrator\Utility\ArrayUtility;
+use WEBcoast\MigratorFromDce\Configuration\FieldConfigurationNormalizerInterface;
 use WEBcoast\MigratorFromDce\Repository\DceRepository;
 
-readonly class DceContentTypeProvider implements ContentTypeProviderInterface
+readonly class DceContentTypeProvider implements ContentTypeProviderInterface, ContainerTemplateProviderInterface
 {
-    public function __construct(protected DceRepository $dceRepository, #[Autowire('webcoast.migrator_from_dce.field_configuration_migrators')] protected array $fieldConfigurationMigrators)
+    /**
+     * @param DceRepository $dceRepository
+     * @param iterable|FieldConfigurationNormalizerInterface[] $fieldConfigurationNormalizers
+     */
+    public function __construct(protected DceRepository $dceRepository, #[AutowireIterator('webcoast.migrator_from_dce.field_configuration_normalizer')] protected iterable $fieldConfigurationNormalizers)
     {
     }
 
@@ -66,27 +72,48 @@ readonly class DceContentTypeProvider implements ContentTypeProviderInterface
 
     public function getFrontendTemplate(string $contentType): ?string
     {
-        $templateContent = null;
         $dceConfiguration = $this->dceRepository->getConfiguration($contentType);
         if ($dceConfiguration['template_type'] === 'inline') {
-            $templateContent = $dceConfiguration['template_content'] ?? '';
+            return $dceConfiguration['template_content'] ?? '';
         } elseif ($dceConfiguration['template_type'] === 'file') {
             $templatePath = $dceConfiguration['template_file'] ?? '';
-            if (str_starts_with($templatePath, 'EXT:')) {
-                $templateContent = file_get_contents(GeneralUtility::getFileAbsFileName($templatePath));
-            } elseif (str_starts_with($templatePath, 't3://file')) {
-                $fileUid = (int) substr($templatePath, 14);
 
-                /** @var FileRepository $fileRepository */
-                $fileRepository = GeneralUtility::makeInstance(FileRepository::class);
-                $file = $fileRepository->findByUid($fileUid);
-                $templateContent = $file->getContents();
-            } elseif (file_exists(Environment::getPublicPath() . '/' . $templatePath)) {
-                $templateContent = file_get_contents(Environment::getPublicPath() . '/' . $templatePath);
-            }
+            return $this->getTemplateContentFromFile($templatePath);
         }
 
-        return $templateContent;
+        return null;
+    }
+
+    public function getContainerTemplate(string $contentType): ?string
+    {
+        $dceConfiguration = $this->dceRepository->getConfiguration($contentType);
+        if ($dceConfiguration['container_template_type'] === 'inline') {
+            return $dceConfiguration['container_template'] ?? '';
+        } elseif ($dceConfiguration['container_template_type'] === 'file') {
+            $templatePath = $dceConfiguration['container_template_file'] ?? '';
+
+            return $this->getTemplateContentFromFile($templatePath);
+        }
+
+        return null;
+    }
+
+    protected function getTemplateContentFromFile(string $templatePath): ?string
+    {
+        if (str_starts_with($templatePath, 'EXT:')) {
+            return file_get_contents(GeneralUtility::getFileAbsFileName($templatePath));
+        } elseif (str_starts_with($templatePath, 't3://file')) {
+            $fileUid = (int) substr($templatePath, 14);
+
+            /** @var FileRepository $fileRepository */
+            $fileRepository = GeneralUtility::makeInstance(FileRepository::class);
+            $file = $fileRepository->findByUid($fileUid);
+            return $file->getContents();
+        } elseif (file_exists(Environment::getPublicPath() . '/' . $templatePath)) {
+            return file_get_contents(Environment::getPublicPath() . '/' . $templatePath);
+        }
+
+        return null;
     }
 
     public function getBackendPreviewTemplate(string $contentType): ?string
@@ -101,6 +128,11 @@ readonly class DceContentTypeProvider implements ContentTypeProviderInterface
             /** @var IconRegistry $iconRegistry */
             $iconRegistry = GeneralUtility::makeInstance(IconRegistry::class);
             $iconConfiguration = $iconRegistry->getIconConfigurationByIdentifier($dceConfiguration['wizard_icon']);
+
+            if (!$iconConfiguration['options']['source'] ?? null) {
+                return null;
+            }
+
             return GeneralUtility::getFileAbsFileName($iconConfiguration['options']['source']);
         }
 
@@ -132,37 +164,18 @@ readonly class DceContentTypeProvider implements ContentTypeProviderInterface
 
                     $dceConfiguration = GeneralUtility::xml2array($dceField['configuration']);
 
-                    foreach ($this->fieldConfigurationMigrators as $fieldConfigurationMigrator) {
-                        $dceConfiguration = $fieldConfigurationMigrator->process($dceConfiguration);
+                    foreach ($this->fieldConfigurationNormalizers as $fieldConfigurationNormalizer) {
+                        if ($fieldConfigurationNormalizer->supports($dceConfiguration)) {
+                            $fieldConfiguration = $fieldConfigurationNormalizer->normalize($fieldConfiguration, $dceConfiguration);
+                        }
                     }
 
-                    $fieldConfiguration['type'] = match ($dceConfiguration['type']) {
-                        'category' => FieldType::CATEGORY,
-                        'check' => FieldType::CHECKBOX,
-                        'color' => FieldType::COLOR,
-                        'datetime' => FieldType::DATETIME,
-                        'email' => FieldType::EMAIL,
-                        'file' => FieldType::FILE,
-                        'flex' => FieldType::FLEXFORM,
-                        'folder' => FieldType::FOLDER,
-                        'group' => FieldType::GROUP,
-                        'imageManipulation' => FieldType::IMAGE_MANIPULATION,
-                        'inline' => FieldType::INLINE,
-                        'input' => FieldType::TEXT,
-                        'json' => FieldType::JSON,
-                        'language' => FieldType::LANGUAGE,
-                        'link' => FieldType::LINK,
-                        'number' => FieldType::NUMBER,
-                        'password' => FieldType::PASSWORD,
-                        'radio' => FieldType::RADIO,
-                        'select' => FieldType::SELECT,
-                        'slug' => FieldType::SLUG,
-                        'text' => FieldType::TEXTAREA,
-                        'uuid' => FieldType::UUID,
-                        default => $dceConfiguration['type'],
-                    };
+                    $fieldConfiguration = ArrayUtility::removeEmptyValuesFromArray($fieldConfiguration);
 
-                    $fieldConfiguration = array_replace_recursive($fieldConfiguration, $dceConfiguration);
+                    if (!($fieldConfiguration['type'] ?? null)) {
+                        // Do not include fields that do not have a type after normalization
+                        continue;
+                    }
 
                     $fields[] = $fieldConfiguration;
                 } elseif ((int) $dceField['type'] === 2) {
@@ -191,7 +204,7 @@ readonly class DceContentTypeProvider implements ContentTypeProviderInterface
                     'name' => 'Content',
                     'colPos' => 100,
                     'allowed' => [
-                        'CType' => 'dce_' . ($dceConfiguration['identifier'] ?? 'dceuid' . $dceConfiguration['uid'])
+                        'CType' => 'dce_' . ($dceConfiguration['identifier'] ?: 'dceuid' . $dceConfiguration['uid'])
                     ],
                     'maxitems' => $dceConfiguration['container_item_limit'] ?? null ?: null,
                 ]
