@@ -60,7 +60,7 @@ class DceContentTypeProvider implements ContentTypeProviderInterface, ContainerT
         $allContentTypes = $this->dceRepository->fetchAll();
         while ($dce = $allContentTypes->fetchAssociative()) {
             $contentTypes[] = [
-                'identifier' => $dce['identifier'] ?? null ?: 'dceuid' . $dce['uid'],
+                'identifier' => $dce['identifier'] ?? null ?: 'dce_dceuid' . $dce['uid'],
                 'title' => $dce['title'],
                 'description' => $dce['wizard_description'] ?? '',
             ];
@@ -76,6 +76,9 @@ class DceContentTypeProvider implements ContentTypeProviderInterface, ContainerT
     public function getConfiguration(string $contentType): ContentType
     {
         $dceConfiguration = $this->dceRepository->getConfiguration($contentType);
+        if (!$dceConfiguration) {
+            throw new \InvalidArgumentException(sprintf('No DCE configuration found for content type "%s"', $contentType));
+        }
 
         return new ContentType(
             $dceConfiguration['identifier'] ?: 'dceuid' . $dceConfiguration['uid'],
