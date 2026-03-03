@@ -4,16 +4,15 @@ declare(strict_types=1);
 
 namespace WEBcoast\MigratorFromDce\Configuration\Normalizer;
 
+use WEBcoast\Migrator\Migration\Field;
 use WEBcoast\Migrator\Migration\FieldType;
 use WEBcoast\MigratorFromDce\Configuration\FieldConfigurationNormalizerInterface;
 
 class FolderFieldNormalizer implements FieldConfigurationNormalizerInterface
 {
-    public function normalize(array $fieldConfiguration, array $dceConfiguration): array
+    public function normalize(Field $normalizedField, array $dceConfiguration): void
     {
-        $fieldConfiguration['type'] = FieldType::FOLDER;
-
-        return $fieldConfiguration;
+        $normalizedField->setType(FieldType::FOLDER);
     }
 
     public function supports(array $configuration): bool

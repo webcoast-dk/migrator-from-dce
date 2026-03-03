@@ -4,25 +4,42 @@ declare(strict_types=1);
 
 namespace WEBcoast\MigratorFromDce;
 
+use Psr\Log\LoggerAwareInterface;
+use Psr\Log\LoggerAwareTrait;
 use Symfony\Component\DependencyInjection\Attribute\AutowireIterator;
 use TYPO3\CMS\Core\Core\Environment;
+use TYPO3\CMS\Core\Database\RelationHandler;
 use TYPO3\CMS\Core\Imaging\IconRegistry;
 use TYPO3\CMS\Core\Resource\FileRepository;
+use TYPO3\CMS\Core\Resource\ResourceFactory;
+use TYPO3\CMS\Core\Resource\StorageRepository;
+use TYPO3\CMS\Core\Service\FlexFormService;
 use TYPO3\CMS\Core\Utility\GeneralUtility;
+use TYPO3\CMS\Core\Utility\MathUtility;
+use WEBcoast\Migrator\Migration\Column;
+use WEBcoast\Migrator\Migration\ContentType;
+use WEBcoast\Migrator\Migration\Field;
+use WEBcoast\Migrator\Migration\FieldCollection;
 use WEBcoast\Migrator\Migration\FieldType;
+use WEBcoast\Migrator\Migration\Grid;
+use WEBcoast\Migrator\Migration\Row;
+use WEBcoast\Migrator\Migration\Section;
+use WEBcoast\Migrator\Migration\Tab;
 use WEBcoast\Migrator\Provider\ContainerTemplateProviderInterface;
 use WEBcoast\Migrator\Provider\ContentTypeProviderInterface;
-use WEBcoast\Migrator\Utility\ArrayUtility;
 use WEBcoast\MigratorFromDce\Configuration\FieldConfigurationNormalizerInterface;
 use WEBcoast\MigratorFromDce\Repository\DceRepository;
 
-readonly class DceContentTypeProvider implements ContentTypeProviderInterface, ContainerTemplateProviderInterface
+class DceContentTypeProvider implements ContentTypeProviderInterface, ContainerTemplateProviderInterface, LoggerAwareInterface
 {
+    use LoggerAwareTrait;
+
     /**
      * @param DceRepository $dceRepository
      * @param iterable|FieldConfigurationNormalizerInterface[] $fieldConfigurationNormalizers
+     * @param FlexFormService $flexFormService
      */
-    public function __construct(protected DceRepository $dceRepository, #[AutowireIterator('webcoast.migrator_from_dce.field_configuration_normalizer')] protected iterable $fieldConfigurationNormalizers)
+    public function __construct(readonly protected DceRepository $dceRepository, #[AutowireIterator('webcoast.migrator_from_dce.field_configuration_normalizer')] readonly protected iterable $fieldConfigurationNormalizers, readonly protected FlexFormService $flexFormService)
     {
     }
 
@@ -56,18 +73,19 @@ readonly class DceContentTypeProvider implements ContentTypeProviderInterface, C
         return $contentTypes;
     }
 
-    public function getConfiguration(string $contentType): array
+    public function getConfiguration(string $contentType): ContentType
     {
         $dceConfiguration = $this->dceRepository->getConfiguration($contentType);
 
-        return [
-            'title' => $dceConfiguration['title'],
-            'description' => $dceConfiguration['wizard_description'] ?? '',
-            'iconIdentifier' => $dceConfiguration['wizard_icon'] ?? '',
-            'group' => $dceConfiguration['wizard_group'] ?? 'dce',
-            'fields' => $this->getNormalizedFieldsConfiguration($this->dceRepository->fetchFieldsByParentDce((int) $dceConfiguration['uid'])),
-            'grid' => $this->getNormalizedGridConfiguration($dceConfiguration),
-        ];
+        return new ContentType(
+            $dceConfiguration['identifier'] ?: 'dceuid' . $dceConfiguration['uid'],
+            $dceConfiguration['title'],
+            $dceConfiguration['wizard_description'] ?? '',
+            $this->getNormalizedFieldsConfiguration($this->dceRepository->fetchFieldsByParentDce((int) $dceConfiguration['uid'])),
+            $this->getNormalizedGridConfiguration($dceConfiguration),
+            $dceConfiguration['wizard_icon'] ?? '',
+            $dceConfiguration['wizard_group'] ?? 'dce',
+        );
     }
 
     public function getFrontendTemplate(string $contentType): ?string
@@ -108,6 +126,7 @@ readonly class DceContentTypeProvider implements ContentTypeProviderInterface, C
             /** @var FileRepository $fileRepository */
             $fileRepository = GeneralUtility::makeInstance(FileRepository::class);
             $file = $fileRepository->findByUid($fileUid);
+
             return $file->getContents();
         } elseif (file_exists(Environment::getPublicPath() . '/' . $templatePath)) {
             return file_get_contents(Environment::getPublicPath() . '/' . $templatePath);
@@ -139,76 +158,211 @@ readonly class DceContentTypeProvider implements ContentTypeProviderInterface, C
         return null;
     }
 
-    protected function getNormalizedFieldsConfiguration(array $dceFields): array
+    public function getRecordData(array $rawRecord): array
     {
-        $fields = [];
+        $rawFlexFormData = $this->flexFormService->convertFlexFormContentToArray($record['pi_flexform'] ?? '')['settings'] ?? [];
+        $data = [];
+        $fields = $this->getConfiguration($rawRecord['CType'])->getFields() ?? [];
+
+        foreach ($fields as $field) {
+            if ($field->getType() === FieldType::TAB) {
+                // Skip tab fields, as they hold no data
+                continue;
+            }
+
+            $this->addData($data, $rawFlexFormData, $rawRecord, $field);
+        }
+
+        return $data;
+    }
+
+    public function addData(array &$data, array $rawFlexFormData, array $record, Field $field): void
+    {
+
+        if ($field instanceof Section) {
+            $this->addDataForSection($data, $rawFlexFormData, $record, $field);
+        } else {
+            $this->addDataForField($data, $rawFlexFormData, $record, $field);
+        }
+    }
+
+    protected function addDataForField(array &$data, array $rawFlexFormData, array $record, Field $field): void
+    {
+        if ($field->getDbField()) {
+            return;
+        }
+
+        $dceFieldConfiguration = $field->getConfiguration() ?? [];
+        if ($field->getType() === FieldType::LEGACY_FILE) {
+            $fileNames = GeneralUtility::trimExplode(',', $rawFlexFormData[$field->getIdentifier()] ?? '', true);
+            if (empty($fileNames)) {
+                $data[$field->getIdentifier()] = [];
+                return;
+            }
+
+            $data[$field->getIdentifier()] = [];
+            // Check if filenames are actually integer file ids, if so, fetch the file objects via the file repository
+            if (MathUtility::canBeInterpretedAsInteger($fileNames[0])) {
+                foreach ($fileNames as $fileId) {
+                    $fileRepository = GeneralUtility::makeInstance(FileRepository::class);
+                    $file = $fileRepository->findByUid((int) $fileId);
+
+                    $data[$field->getIdentifier()][] = $file;
+                }
+            } else {
+                // Otherwise, assume they are file names and try to fetch the file objects via the storage repository
+                /** @var StorageRepository $storageRepository */
+                $storageRepository = GeneralUtility::makeInstance(StorageRepository::class);
+                foreach ($fileNames as $fileName) {
+                    $fileIdentifier = ltrim(($dceFieldConfiguration['uploadfolder'] ?? '') . '/' . $fileName, '/');
+                    $storage = $storageRepository->getStorageObject(0, [], $fileIdentifier);
+
+                    try {
+                        $file = $storage->getFile($fileIdentifier);
+                        if ($storage->getUid() === 0) {
+                            $defaultStorage = $storageRepository->getDefaultStorage();
+                            if (!$defaultStorage->hasFolder(dirname($fileIdentifier))) {
+                                $defaultStorage->createFolder(dirname($fileIdentifier));
+                            }
+                            $targetFolder = $defaultStorage->getFolder(dirname($fileIdentifier));
+                            if (!$targetFolder->hasFile($fileName)) {
+                                $newFile = $file->copyTo($targetFolder);
+                            } elseif ($targetFolder->getFile($fileName)->getSha1() === $file->getSha1()) {
+                                $newFile = $targetFolder->getFile($fileName);
+                            } else {
+                                $newFile = $file->copyTo($targetFolder);
+                            }
+                        }
+                        $data[$field->getIdentifier()][] = $newFile ?? $file;
+                    } catch (\Exception $e) {
+                        $this->logger->error($e->getMessage());
+                    }
+                }
+            }
+        } elseif ($field->getType() === FieldType::FILE) {
+            $data[$field->getIdentifier()] = [];
+
+            /** @var RelationHandler $relationHandler */
+            $relationHandler = GeneralUtility::makeInstance(RelationHandler::class);
+            $relationHandler->initializeForField('tt_content', array_replace_recursive($dceFieldConfiguration, ['foreign_match_fields' => ['fieldname' => 'settings.' . str_replace('{$variable}', $field->getIdentifier(), $dceFieldConfiguration['foreign_match_fields']['fieldname'])]]), $record['uid']);
+            if (!empty($relationHandler->tableArray['sys_file_reference'])) {
+                $relationHandler->processDeletePlaceholder();
+                $referenceUids = $relationHandler->tableArray['sys_file_reference'];
+
+                /** @var ResourceFactory $resourceFactory */
+                $resourceFactory = GeneralUtility::makeInstance(ResourceFactory::class);
+                foreach ($referenceUids as $referenceUid) {
+                    $data[$field->getIdentifier()][] = $resourceFactory->getFileReferenceObject($referenceUid);
+                }
+            }
+
+            $relationHandler->initializeForField('tt_content', array_replace_recursive($dceFieldConfiguration, ['foreign_match_fields' => ['fieldname' => str_replace('{$variable}', $field->getIdentifier(), $dceFieldConfiguration['foreign_match_fields']['fieldname'])]]), $record['uid']);
+            if (!empty($relationHandler->tableArray['sys_file_reference'])) {
+                $relationHandler->processDeletePlaceholder();
+                $referenceUids = $relationHandler->tableArray['sys_file_reference'];
+
+                /** @var ResourceFactory $resourceFactory */
+                $resourceFactory = GeneralUtility::makeInstance(ResourceFactory::class);
+                foreach ($referenceUids as $referenceUid) {
+                    $data[$field->getIdentifier()][] = $resourceFactory->getFileReferenceObject($referenceUid);
+                }
+            }
+        } else {
+            $data[$field->getIdentifier()] = $rawFlexFormData[$field->getIdentifier()] ?? '';
+        }
+    }
+
+    protected function addDataForSection(array &$data, array $rawFlexFormData, array $record, Section $field): void
+    {
+        $sections = $rawFlexFormData[$field->getIdentifier()] ?? [] ?: [];
+        $data[$field->getIdentifier()] = [];
+
+        foreach ($sections as $section) {
+            $childData = [];
+            foreach ($field as $childField) {
+                if ($childField->getType() === FieldType::TAB) {
+                    // Skip tab fields, as they hold no data
+                    continue;
+                }
+                $childFlexFormData = $section[$field->getObjectIdentifier()] ?? [];
+                $this->addData($childData, $childFlexFormData, $record, $childField);
+            }
+
+            $data[$field->getIdentifier()][] = $childData;
+        }
+    }
+
+    protected function getNormalizedFieldsConfiguration(array $dceFields): FieldCollection
+    {
+        $fields = new FieldCollection();
 
         foreach ($dceFields as $dceField) {
             if ((int) $dceField['type'] === 1) {
-                $fields[] = [
-                    'identifier' => $dceField['variable'],
-                    'type' => FieldType::TAB,
-                    'title' => $dceField['title'],
-                ];
+                $fields->addField(
+                    new Tab(
+                        $dceField['variable'],
+                        $dceField['title']
+                    )
+                );
+            } elseif ((int) $dceField['type'] === 2) {
+                $fields->addField(
+                    new Section(
+                        $dceField['variable'],
+                        'container_' . $dceField['variable'],
+                        $dceField['title'],
+                        fields: $this->getNormalizedFieldsConfiguration($this->dceRepository->fetchFieldsByParentField((int) $dceField['uid']))
+                    )
+                );
             } else {
-                $fieldConfiguration = [
-                    'identifier' => $dceField['variable'],
-                    'label' => $dceField['title'],
-                ];
+                $normalizedField = new Field(
+                    $dceField['variable'],
+                    null,
+                    $dceField['title']
+                );
 
-
-                if ((int) $dceField['type'] === 0) {
-                    if ($dceField['map_to']) {
-                        $fieldConfiguration['db_field'] = $dceField['map_to'];
-                    }
-
-                    $dceConfiguration = GeneralUtility::xml2array($dceField['configuration']);
-
-                    foreach ($this->fieldConfigurationNormalizers as $fieldConfigurationNormalizer) {
-                        if ($fieldConfigurationNormalizer->supports($dceConfiguration)) {
-                            $fieldConfiguration = $fieldConfigurationNormalizer->normalize($fieldConfiguration, $dceConfiguration);
-                        }
-                    }
-
-                    $fieldConfiguration = ArrayUtility::removeEmptyValuesFromArray($fieldConfiguration);
-
-                    if (!($fieldConfiguration['type'] ?? null)) {
-                        // Do not include fields that do not have a type after normalization
-                        continue;
-                    }
-
-                    $fields[] = $fieldConfiguration;
-                } elseif ((int) $dceField['type'] === 2) {
-                    $fields[] = [
-                        'identifier' => $dceField['variable'],
-                        'type' => FieldType::SECTION,
-                        'title' => $dceField['title'],
-                        'fields' => $this->getNormalizedFieldsConfiguration($this->dceRepository->fetchFieldsByParentField((int) $dceField['uid'])),
-                    ];
+                if ($dceField['map_to']) {
+                    $normalizedField->setDbField($dceField['map_to']);
                 }
+
+                $dceConfiguration = GeneralUtility::xml2array($dceField['configuration']);
+
+                foreach ($this->fieldConfigurationNormalizers as $fieldConfigurationNormalizer) {
+                    if ($fieldConfigurationNormalizer->supports($dceConfiguration)) {
+                        $fieldConfigurationNormalizer->normalize($normalizedField, $dceConfiguration);
+                    }
+                }
+
+                if (!($normalizedField->getType() ?? null)) {
+                    // Do not include fields that do not have a type after normalization
+                    continue;
+                }
+
+                $fields->addField($normalizedField);
             }
         }
 
         return $fields;
     }
 
-    protected function getNormalizedGridConfiguration(array $dceConfiguration): array
+    protected function getNormalizedGridConfiguration(array $dceConfiguration): ?Grid
     {
         if (!$dceConfiguration['enable_container']) {
-            return [];
+            return null;
         }
 
-        return ArrayUtility::removeEmptyValuesFromArray([
-            [
-                [
-                    'name' => 'Content',
-                    'colPos' => 100,
-                    'allowed' => [
-                        'CType' => 'dce_' . ($dceConfiguration['identifier'] ?: 'dceuid' . $dceConfiguration['uid'])
-                    ],
-                    'maxitems' => $dceConfiguration['container_item_limit'] ?? null ?: null,
-                ]
-            ]
-        ]);
+        $grid = new Grid();
+        $row = new Row();
+        $row->attach(new Column(
+            'Content',
+            100,
+            allowed: [
+                'CType' => 'dce_' . ($dceConfiguration['identifier'] ?: 'dceuid' . $dceConfiguration['uid'])
+            ],
+            maxitems: $dceConfiguration['container_item_limit'] ?? null ?: null
+        ));
+
+        $grid->attach($row);
+
+        return $grid;
     }
 }
