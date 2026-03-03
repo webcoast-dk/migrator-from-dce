@@ -163,7 +163,7 @@ class DceContentTypeProvider implements ContentTypeProviderInterface, ContainerT
 
     public function getRecordData(array $rawRecord): array
     {
-        $rawFlexFormData = $this->flexFormService->convertFlexFormContentToArray($record['pi_flexform'] ?? '')['settings'] ?? [];
+        $rawFlexFormData = $this->flexFormService->convertFlexFormContentToArray($rawRecord['pi_flexform'] ?? '')['settings'] ?? [];
         $data = [];
         $fields = $this->getConfiguration($rawRecord['CType'])->getFields() ?? [];
 
