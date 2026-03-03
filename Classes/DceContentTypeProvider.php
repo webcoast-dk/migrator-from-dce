@@ -247,27 +247,37 @@ class DceContentTypeProvider implements ContentTypeProviderInterface, ContainerT
 
             /** @var RelationHandler $relationHandler */
             $relationHandler = GeneralUtility::makeInstance(RelationHandler::class);
-            $relationHandler->initializeForField('tt_content', array_replace_recursive($dceFieldConfiguration, ['foreign_match_fields' => ['fieldname' => 'settings.' . str_replace('{$variable}', $field->getIdentifier(), $dceFieldConfiguration['foreign_match_fields']['fieldname'])]]), $record['uid']);
-            if (!empty($relationHandler->tableArray['sys_file_reference'])) {
-                $relationHandler->processDeletePlaceholder();
-                $referenceUids = $relationHandler->tableArray['sys_file_reference'];
-
-                /** @var ResourceFactory $resourceFactory */
-                $resourceFactory = GeneralUtility::makeInstance(ResourceFactory::class);
-                foreach ($referenceUids as $referenceUid) {
-                    $data[$field->getIdentifier()][] = $resourceFactory->getFileReferenceObject($referenceUid);
+            $possibleFieldNames = [
+                'settings.' . $field->getIdentifier(),
+                $field->getIdentifier(),
+            ];
+            foreach ($possibleFieldNames as $possibleFieldName) {
+                $fieldConfigurationForRelationHandler = $dceFieldConfiguration;
+                if (empty($fieldConfigurationForRelationHandler['type'])) {
+                    // Fallback to "file" type. The FieldType::FILE would either be "file" or "inline". "inline" would be set as type in the field configuration
+                    $fieldConfigurationForRelationHandler['type'] = 'file';
+                    $fieldConfigurationForRelationHandler['foreign_table'] = 'sys_file_reference';
+                    $fieldConfigurationForRelationHandler['foreign_field'] = 'uid_foreign';
+                    $fieldConfigurationForRelationHandler['foreign_sortby'] = 'sorting_foreign';
+                    $fieldConfigurationForRelationHandler['foreign_table_field'] = 'tablenames';
+                    $fieldConfigurationForRelationHandler['foreign_match_fields'] = [
+                        'tablenames' => 'tt_content',
+                        'fieldname' => $possibleFieldName,
+                    ];
+                } elseif (!empty($fieldConfigurationForRelationHandler['foreign_match_fields']['fieldname'] ?? null)) {
+                    $fieldConfigurationForRelationHandler['foreign_match_fields']['fieldname'] = str_replace('{$variable}', $possibleFieldName, $dceFieldConfiguration['foreign_match_fields']['fieldname']);
                 }
-            }
 
-            $relationHandler->initializeForField('tt_content', array_replace_recursive($dceFieldConfiguration, ['foreign_match_fields' => ['fieldname' => str_replace('{$variable}', $field->getIdentifier(), $dceFieldConfiguration['foreign_match_fields']['fieldname'])]]), $record['uid']);
-            if (!empty($relationHandler->tableArray['sys_file_reference'])) {
-                $relationHandler->processDeletePlaceholder();
-                $referenceUids = $relationHandler->tableArray['sys_file_reference'];
+                $relationHandler->initializeForField('tt_content', $fieldConfigurationForRelationHandler, $record['uid']);
+                if (!empty($relationHandler->tableArray['sys_file_reference'])) {
+                    $relationHandler->processDeletePlaceholder();
+                    $referenceUids = $relationHandler->tableArray['sys_file_reference'];
 
-                /** @var ResourceFactory $resourceFactory */
-                $resourceFactory = GeneralUtility::makeInstance(ResourceFactory::class);
-                foreach ($referenceUids as $referenceUid) {
-                    $data[$field->getIdentifier()][] = $resourceFactory->getFileReferenceObject($referenceUid);
+                    /** @var ResourceFactory $resourceFactory */
+                    $resourceFactory = GeneralUtility::makeInstance(ResourceFactory::class);
+                    foreach ($referenceUids as $referenceUid) {
+                        $data[$field->getIdentifier()][] = $resourceFactory->getFileReferenceObject($referenceUid);
+                    }
                 }
             }
         } else {
