@@ -92,7 +92,8 @@ trait ContainerEnabledTrait
                 $queryBuilder->expr()->eq('pid', $queryBuilder->createNamedParameter($record['pid'], ParameterType::INTEGER)),
                 $queryBuilder->expr()->eq('sys_language_uid', $queryBuilder->createNamedParameter($record['sys_language_uid'], ParameterType::INTEGER)),
                 $queryBuilder->expr()->eq('colPos', $queryBuilder->createNamedParameter($record['colPos'], ParameterType::INTEGER)),
-                $queryBuilder->expr()->lte('sorting', $queryBuilder->createNamedParameter($record['sorting'], ParameterType::INTEGER))
+                $queryBuilder->expr()->lte('sorting', $queryBuilder->createNamedParameter($record['sorting'], ParameterType::INTEGER)),
+                $queryBuilder->expr()->neq('uid', $queryBuilder->createNamedParameter($record['uid']))
             )
             ->orderBy('sorting', 'DESC')
             ->setMaxResults(1);
