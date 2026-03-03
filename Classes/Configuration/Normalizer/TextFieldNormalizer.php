@@ -14,7 +14,7 @@ class TextFieldNormalizer implements FieldConfigurationNormalizerInterface
 {
     public function normalize(Field $normalizedField, array $dceConfiguration): void
     {
-        $eval = GeneralUtility::trimExplode(',', $dceConfiguration['eval'], true);
+        $eval = GeneralUtility::trimExplode(',', $dceConfiguration['eval'] ?? '', true);
         $normalizedField->setType(FieldType::TEXT);
         $normalizedField->setConfiguration(
             ArrayUtility::removeEmptyValuesFromArray([
