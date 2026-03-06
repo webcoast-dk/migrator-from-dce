@@ -163,8 +163,8 @@ class ThreeImagesWithTextMigrator extends ContainerAwareRecordMigrator implement
 The development of this extension has been sponsored by
 * [Aemka](https://aemka.de/)
 * [apart](https://apart.lu/)
+* [Homepage Helden](https://www.homepage-helden.de/)
 * [HZ Internet Services](https://www.hziegenhain.de/)
-* [Siteway](https://www.siteway.de/)
 
 Thanks to all sponsors for their support and contributions to the development of this extension!
 
